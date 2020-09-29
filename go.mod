@@ -1,4 +1,4 @@
-module github.com/dianelooney/wow-emojis
+module github.com/dianelooney/emojulator
 
 go 1.14
 
