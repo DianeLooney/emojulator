@@ -1,0 +1,6 @@
+## Interface: 81300
+## Title: DiscordEmotes
+## Author: Diane
+## Version: v1
+## Dependencies: TwitchEmotes
+core.lua
