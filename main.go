@@ -9,10 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -25,10 +23,12 @@ import (
 var token string
 var sentryURL string
 var discord *discordgo.Session
+var port string
 
 func init() {
 	token = os.Getenv("DISCORD_TOKEN")
 	sentryURL = os.Getenv("SENTRY_URL")
+	port = os.Getenv("PORT")
 
 	var err error
 	discord, err = discordgo.New("Bot " + token)
@@ -51,9 +51,7 @@ func main() {
 		return
 	}
 	defer discord.Close()
-	sc := make(chan os.Signal, 1)
-	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt, os.Kill)
-	<-sc
+	http.ListenAndServe(":" + port, nil)
 }
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
