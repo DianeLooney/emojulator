@@ -131,6 +131,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return errors.Wrap(err, "unable to read source file")
 		}
 		if strings.Contains(path, "DiscordEmotes.lua") {
+			// TODO: Use a template for sappho sake.
+			data = bytes.Replace(data, []byte("discord_server_id"), []byte(packName), 1)
 			for _, e := range g.Emojis {
 				nsEmoji := fmt.Sprintf("discord.%v.%v", g.ID, e.Name)
 				data = bytes.Replace(data, []byte("--Pack"), []byte(fmt.Sprintf("['%v']='Interface\\\\AddOns\\\\%v\\\\%v\\\\%v.tga:28:28',\n--Pack", nsEmoji, packName, g.ID, e.Name)), 1)
