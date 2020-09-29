@@ -22,6 +22,7 @@ import (
 
 var token string
 var sentryURL string
+var redirectURL string
 var discord *discordgo.Session
 var port string
 
@@ -29,13 +30,7 @@ func init() {
 	token = os.Getenv("DISCORD_TOKEN")
 	sentryURL = os.Getenv("SENTRY_URL")
 	port = os.Getenv("PORT")
-
-	var err error
-	discord, err = discordgo.New("Bot " + token)
-	if err != nil {
-		fmt.Println("error creating Discord session,", err)
-		return
-	}
+	redirectURL = os.Getenv("REDIRECT_URL")
 }
 
 func main() {
@@ -44,14 +39,24 @@ func main() {
 	}
 	defer sentry.Flush(2 * time.Second)
 
-	discord.AddHandler(messageCreate)
 	
+	var err error
+	discord, err = discordgo.New("Bot " + token)
+	if err != nil {
+		fmt.Println("error creating Discord session,", err)
+		return
+	}
+	discord.AddHandler(messageCreate)
+
 	if err := discord.Open(); err != nil {
 		fmt.Println("error opening connection,", err)
 		return
 	}
 	defer discord.Close()
-	http.ListenAndServe(":" + port, nil)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+	})
+	http.ListenAndServe(":"+port, nil)
 }
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -59,7 +64,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	var err error
 	defer func() {
-		dump := func (id *sentry.EventID) {
+		dump := func(id *sentry.EventID) {
 			if id == nil {
 				s.ChannelMessageSend(m.ChannelID, "Unable to generate emoji. ☹️")
 			} else {
