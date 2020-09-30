@@ -60,9 +60,9 @@ func main() {
 }
 
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	sentryHub := sentry.CurrentHub().Clone()
-
+	// set up error reporting
 	var err error
+	sentryHub := sentry.CurrentHub().Clone()
 	defer func() {
 		dump := func(id *sentry.EventID) {
 			if id == nil {
@@ -84,17 +84,22 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}()
 
-	if m.Author.ID == s.State.User.ID {
+	// only respond to messages from non-bots that are `!emojulate`
+	if m.Author.Bot {
 		return
 	}
-	if !strings.HasPrefix(m.Content, "!emoj") {
+	
+	if m.Content != "!emojulate" {
 		return
 	}
 
+	// add context to error reporting
 	sentryHub.ConfigureScope(func(scope *sentry.Scope) {
 		scope.SetUser(sentry.User{
 			ID: m.Author.ID,
 		})
+		scope.SetTag("channel.id", m.ChannelID)
+		scope.SetTag("guild.id", m.GuildID)
 	})
 
 	if _, err = s.ChannelMessageSend(m.ChannelID, "Generating..."); err != nil {
@@ -102,21 +107,17 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	sentryHub.ConfigureScope(func(scope *sentry.Scope) {
-		scope.SetTag("channel.id", m.ChannelID)
-		scope.SetTag("guild.id", m.GuildID)
-	})
-
-	g, err := discord.Guild(m.GuildID)
+	guild, err := discord.Guild(m.GuildID)
 	if err != nil {
 		err = errors.Wrap(err, "unable to retrieve guild info")
 		return
 	}
 
 	buf := new(bytes.Buffer)
-	z := zip.NewWriter(buf)
-	packName := fmt.Sprintf("TwitchEmotes - %v", g.Name)
+	zipWriter := zip.NewWriter(buf)
+	packName := fmt.Sprintf("TwitchEmotes - %v", guild.Name)
 
+	// copy the template data to the zip
 	err = filepath.Walk("./DiscordEmotes", func(path string, info os.FileInfo, err error) error {
 		if path == "./DiscordEmotes" {
 			return nil
@@ -124,11 +125,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if info.IsDir() {
 			return nil
 		}
-		remappedPath := strings.ReplaceAll(path, "DiscordEmotes", packName)
-		w, err := z.Create(remappedPath)
-		if err != nil {
-			return errors.Wrap(err, "unable to create")
-		}
+		
 		data, err := ioutil.ReadFile(path)
 		if err != nil {
 			return errors.Wrap(err, "unable to read source file")
@@ -136,8 +133,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if strings.Contains(path, "DiscordEmotes.lua") {
 			// TODO: Use a template for sappho sake.
 			data = bytes.Replace(data, []byte("discord_server_id"), []byte(packName), 1)
-			for _, e := range g.Emojis {
-				nsEmoji := fmt.Sprintf("discord.%v.%v", g.ID, e.Name)
+			for _, e := range guild.Emojis {
+				nsEmoji := fmt.Sprintf("discord.%v.%v", guild.ID, e.Name)
 				data = bytes.Replace(data, []byte("--Pack"), []byte(fmt.Sprintf("['%v']='Interface\\\\AddOns\\\\%v\\\\%v\\\\%v.tga:28:28',\n--Pack", nsEmoji, packName, g.ID, e.Name)), 1)
 				data = bytes.Replace(data, []byte("--Emoticons"), []byte(fmt.Sprintf("['%v']='%v',\n--Emoticons", ":"+e.Name+":", nsEmoji)), 1)
 			}
@@ -145,47 +142,54 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if strings.Contains(path, "DiscordEmotes.toc") {
 			data = bytes.Replace(data, []byte("## Title: DiscordEmotes"), []byte(fmt.Sprintf("## Title: %v", packName)), 1)
 		}
-		_, err = w.Write(data)
+
+		remappedPath := strings.ReplaceAll(path, "DiscordEmotes", packName)
+		writer, err := zipWriter.Create(remappedPath)
+		if err != nil {
+			return errors.Wrap(err, "unable to create")
+		}
+
+		_, err = writer.Write(data)
 		if err != nil {
 			err = errors.Wrap(err, "unable to write data to zip")
 		}
+
 		return err
 	})
 
-	for _, e := range g.Emojis {
+	// add emojis to the zip
+	for _, e := range guild.Emojis {
 		loc := fmt.Sprintf("https://cdn.discordapp.com/emojis/%v.png", e.ID)
-		cl := http.Client{}
-		d, err := cl.Get(loc)
+		client := http.Client{}
+		d, err := client.Get(loc)
 		if err != nil {
 			err = errors.Wrap(err, "unable to download emoji")
 			return
 		}
-		i, err := png.Decode(d.Body)
+		image, err := png.Decode(d.Body)
 		if err != nil {
 			err = errors.Wrap(err, "unable to decode as png")
 			return
 		}
-		m := resize.Resize(32, 32, i, resize.Lanczos3)
-		w, err := z.Create(fmt.Sprintf("%v\\%v\\%v.tga", packName, g.ID, e.Name))
+		image = resize.Resize(32, 32, image, resize.Lanczos3)
+		w, err := zipWriter.Create(fmt.Sprintf("%v\\%v\\%v.tga", packName, guild.ID, e.Name))
 		if err != nil {
 			err = errors.Wrap(err, "unable to add file to zip")
 			return
 		}
-		wrt := new(bytes.Buffer)
-		err = tga.Encode(wrt, m)
+		err = tga.Encode(w, image)
 		if err != nil {
-			err = errors.Wrap(err, "unable to encode image")
-			return
-		}
-		_, err = w.Write(wrt.Bytes())
-		if err != nil {
-			err = errors.Wrap(err, "unable to write image data")
+			err = errors.Wrap(err, "unable to encode image as tga")
 			return
 		}
 	}
+	err = zipWriter.Close()
+	if err != nil {
+		err = errors.Wrap(err, "unable to close zipwriter")
+		return
+	}
 
-	z.Close()
-
+	// upload emoji pack to the server
 	_, err = s.ChannelFileSendWithMessage(m.ChannelID, "All done! 🎉", fmt.Sprintf("%v.zip", packName), buf)
 	if err != nil {
 		err = errors.Wrap(err, "unable to send addon to channel")

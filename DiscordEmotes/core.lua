@@ -5,4 +5,4 @@ local emoticons = {
     --Emoticons
 }
 
-TwitchEmotes_RegisterEmojiPack("discord_server_id", emoticons, pack);
+Emoticons_RegisterPack("discord_server_id", emoticons, pack);
