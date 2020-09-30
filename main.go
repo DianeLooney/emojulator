@@ -34,12 +34,13 @@ func init() {
 }
 
 func main() {
+	// start error tracking
 	if err := sentry.Init(sentry.ClientOptions{Dsn: sentryURL}); err != nil {
 		log.Fatalf("sentry.Init: %s", err)
 	}
 	defer sentry.Flush(2 * time.Second)
 
-	
+	// connect to the discord api
 	var err error
 	discord, err = discordgo.New("Bot " + token)
 	if err != nil {
@@ -53,22 +54,26 @@ func main() {
 		return
 	}
 	defer discord.Close()
+
+	// not easy to see here from this, but this makes it so:
+	// https://emojulator.diane.af and https://emojulator-beta.diane.af
+	// redirects users to add the bot to their server 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 	})
 	http.ListenAndServe(":"+port, nil)
 }
 
-func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+func messageCreate(session *discordgo.Session, message *discordgo.MessageCreate) {
 	// set up error reporting
 	var err error
 	sentryHub := sentry.CurrentHub().Clone()
 	defer func() {
 		dump := func(id *sentry.EventID) {
 			if id == nil {
-				s.ChannelMessageSend(m.ChannelID, "Unable to generate emoji. ☹️")
+				session.ChannelMessageSend(message.ChannelID, "Unable to generate emoji. ☹️")
 			} else {
-				s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Unable to generate emoji. ☹️\nerror_id: %v", *id))
+				session.ChannelMessageSend(message.ChannelID, fmt.Sprintf("Unable to generate emoji. ☹️\nerror_id: %v", *id))
 			}
 		}
 
@@ -85,29 +90,29 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}()
 
 	// only respond to messages from non-bots that are `!emojulate`
-	if m.Author.Bot {
+	if message.Author.Bot {
 		return
 	}
 	
-	if m.Content != "!emojulate" {
+	if message.Content != "!emojulate" {
 		return
 	}
 
 	// add context to error reporting
 	sentryHub.ConfigureScope(func(scope *sentry.Scope) {
 		scope.SetUser(sentry.User{
-			ID: m.Author.ID,
+			ID: message.Author.ID,
 		})
-		scope.SetTag("channel.id", m.ChannelID)
-		scope.SetTag("guild.id", m.GuildID)
+		scope.SetTag("channel.id", message.ChannelID)
+		scope.SetTag("guild.id", message.GuildID)
 	})
 
-	if _, err = s.ChannelMessageSend(m.ChannelID, "Generating..."); err != nil {
+	if _, err = session.ChannelMessageSend(message.ChannelID, "Generating..."); err != nil {
 		err = errors.Wrap(err, "unable to send message to channel")
 		return
 	}
 
-	guild, err := discord.Guild(m.GuildID)
+	guild, err := discord.Guild(message.GuildID)
 	if err != nil {
 		err = errors.Wrap(err, "unable to retrieve guild info")
 		return
@@ -130,19 +135,24 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if err != nil {
 			return errors.Wrap(err, "unable to read source file")
 		}
-		if strings.Contains(path, "DiscordEmotes.lua") {
+
+		// If this is core.lua we have to insert the Pack and Emoticons into the file
+		if strings.Contains(path, "core.lua") {
 			// TODO: Use a template for sappho sake.
 			data = bytes.Replace(data, []byte("discord_server_id"), []byte(packName), 1)
 			for _, e := range guild.Emojis {
 				nsEmoji := fmt.Sprintf("discord.%v.%v", guild.ID, e.Name)
-				data = bytes.Replace(data, []byte("--Pack"), []byte(fmt.Sprintf("['%v']='Interface\\\\AddOns\\\\%v\\\\%v\\\\%v.tga:28:28',\n--Pack", nsEmoji, packName, g.ID, e.Name)), 1)
+				data = bytes.Replace(data, []byte("--Pack"), []byte(fmt.Sprintf("['%v']='Interface\\\\AddOns\\\\%v\\\\%v\\\\%v.tga:28:28',\n--Pack", nsEmoji, packName, guild.ID, e.Name)), 1)
 				data = bytes.Replace(data, []byte("--Emoticons"), []byte(fmt.Sprintf("['%v']='%v',\n--Emoticons", ":"+e.Name+":", nsEmoji)), 1)
 			}
 		}
+
+		// If this is the toc we have to update the title so you can read it in the wow interface
 		if strings.Contains(path, "DiscordEmotes.toc") {
 			data = bytes.Replace(data, []byte("## Title: DiscordEmotes"), []byte(fmt.Sprintf("## Title: %v", packName)), 1)
 		}
 
+		// Without changing paths all addons downloaded from this bot would look the same
 		remappedPath := strings.ReplaceAll(path, "DiscordEmotes", packName)
 		writer, err := zipWriter.Create(remappedPath)
 		if err != nil {
@@ -159,24 +169,34 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	// add emojis to the zip
 	for _, e := range guild.Emojis {
-		loc := fmt.Sprintf("https://cdn.discordapp.com/emojis/%v.png", e.ID)
+		downloadPath := fmt.Sprintf("https://cdn.discordapp.com/emojis/%v.png", e.ID)
+
+		// download the emoji
 		client := http.Client{}
-		d, err := client.Get(loc)
+		d, err := client.Get(downloadPath)
 		if err != nil {
 			err = errors.Wrap(err, "unable to download emoji")
 			return
 		}
+
+		// convert it from a png to an image we can manipulate
 		image, err := png.Decode(d.Body)
 		if err != nil {
 			err = errors.Wrap(err, "unable to decode as png")
 			return
 		}
+
+		// resize the image to 32x32 so wow will read it
 		image = resize.Resize(32, 32, image, resize.Lanczos3)
+
+		// create the file so we can write it to the zip
 		w, err := zipWriter.Create(fmt.Sprintf("%v\\%v\\%v.tga", packName, guild.ID, e.Name))
 		if err != nil {
 			err = errors.Wrap(err, "unable to add file to zip")
 			return
 		}
+
+		// encode the image as tga directly into the zip
 		err = tga.Encode(w, image)
 		if err != nil {
 			err = errors.Wrap(err, "unable to encode image as tga")
@@ -190,7 +210,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// upload emoji pack to the server
-	_, err = s.ChannelFileSendWithMessage(m.ChannelID, "All done! 🎉", fmt.Sprintf("%v.zip", packName), buf)
+	_, err = session.ChannelFileSendWithMessage(message.ChannelID, "All done! 🎉", fmt.Sprintf("%v.zip", packName), buf)
 	if err != nil {
 		err = errors.Wrap(err, "unable to send addon to channel")
 	}
