@@ -190,14 +190,14 @@ func messageCreate(session *discordgo.Session, message *discordgo.MessageCreate)
 		image = resize.Resize(32, 32, image, resize.Lanczos3)
 
 		// create the file so we can write it to the zip
-		w, err := zipWriter.Create(fmt.Sprintf("%v\\%v\\%v.tga", packName, guild.ID, e.Name))
+		zipImageWriter, err := zipWriter.Create(fmt.Sprintf("%v\\%v\\%v.tga", packName, guild.ID, e.Name))
 		if err != nil {
 			err = errors.Wrap(err, "unable to add file to zip")
 			return
 		}
 
 		// encode the image as tga directly into the zip
-		err = tga.Encode(w, image)
+		err = tga.Encode(zipImageWriter, image)
 		if err != nil {
 			err = errors.Wrap(err, "unable to encode image as tga")
 			return
